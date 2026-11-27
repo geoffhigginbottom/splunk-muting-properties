@@ -201,6 +201,7 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
     added: List[str] = []
     changed: List[str] = []
     removed: List[str] = []
+    removed_names: List[str] = []
     skipped: List[str] = []
     for name, value in wanted.items():
         if remove:
@@ -208,6 +209,7 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
                 continue  # already absent
             if str(existing[name]) == value or force:
                 removed.append("%s=%r" % (name, existing[name]))
+                removed_names.append(name)
                 del merged[name]
             else:
                 skipped.append("%s (existing %r, config %r)" % (name, existing[name], value))
@@ -250,6 +252,8 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
     if dry_run:
         return "would_update", message, existing, merged
 
+    # Removed properties are left out of the PUT body. (Sending them with a null
+    # value was tried and the API answered HTTP 500 for every host.)
     body = {
         "key": key,
         "value": host,
@@ -261,18 +265,30 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
     if not put.ok:
         return "error", "PUT failed: HTTP %d %s" % (put.status_code, put.text[:200]), existing, None
 
-    # Re-read so the output shows what the API actually stored.
-    verify = api_request(session, "GET", url)
-    if verify.ok:
+    # Re-read so the output shows what the API actually stored. Metadata writes
+    # are eventually consistent, so poll for a few seconds before warning.
+    stored: Dict[str, Any] = {}
+    missing: List[str] = []
+    still_there: List[str] = []
+    verified = False
+    for attempt in range(5):
+        verify = api_request(session, "GET", url)
+        if not verify.ok:
+            break
+        verified = True
         stored = verify.json().get("customProperties") or {}
         missing = [n for n, v in merged.items() if str(stored.get(n)) != str(v)]
-        if missing:
-            message += " | WARNING: not visible after write yet: " + ", ".join(missing)
-        still_there = [n for n in existing if n not in merged and n in stored]
-        if still_there:
-            message += " | WARNING: still present after removal: " + ", ".join(still_there)
-        return "updated", message, existing, stored
-    return "updated", message + " | could not re-read to verify", existing, merged
+        still_there = [n for n in removed_names if n in stored]
+        if not missing and not still_there:
+            break
+        time.sleep(2)
+    if not verified:
+        return "updated", message + " | could not re-read to verify", existing, merged
+    if missing:
+        message += " | WARNING: not visible after write yet: " + ", ".join(missing)
+    if still_there:
+        message += " | WARNING: still present after removal: " + ", ".join(still_there)
+    return "updated", message, existing, stored
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +301,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--csv", required=True, help="CSV file; hostnames in the first column")
     parser.add_argument("--config", default="config.json", help="JSON config file (default: config.json)")
+    parser.add_argument("--dimension-key",
+                        help="dimension the CSV values belong to, overriding 'dimension_key' "
+                             "in the config (e.g. host or host.name)")
     parser.add_argument("--dry-run", action="store_true",
                         help="show what would change without modifying anything")
     parser.add_argument("--overwrite", action="store_true",
@@ -316,6 +335,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         cfg = load_config(args.config)
         hosts = read_hosts(args.csv)
+        if args.dimension_key:
+            cfg["dimension_key"] = args.dimension_key
     except ConfigError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2

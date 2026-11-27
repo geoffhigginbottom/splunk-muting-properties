@@ -170,12 +170,18 @@ else). Add `--force` to remove the named properties whatever their value.
 Hosts that don't have the property are reported as `UNCHANGED`.
 `--remove` can't be combined with `--overwrite`.
 
+How deletion works: the script sends the dimension back without the removed
+properties and with everything else unchanged. After the write it re-reads the
+host for up to about 10 seconds and prints a `WARNING` if a removed property is
+still there. Check the result with a dry run, which reads the dimension again:
+`BEFORE` should no longer list the property.
 ### Options
 
 | Option | Description |
 | --- | --- |
 | `--csv FILE` | Required. CSV file with hostnames in the first column. |
 | `--config FILE` | JSON config file. Default `config.json`. |
+| `--dimension-key KEY` | Dimension the CSV values belong to, overriding `dimension_key` in the config (for example `host`). |
 | `--dry-run` | Show what would change without modifying anything. Still sends a read-only `GET` for each host. |
 | `--overwrite` | Replace existing properties that have a different value. |
 | `--remove` | Remove the properties named in the config instead of adding them. Everything else is kept. |
