@@ -19,6 +19,11 @@ Examples:
   python add_properties.py --csv hosts.csv --dry-run
   python add_properties.py --csv hosts.csv
   python add_properties.py --csv hosts.csv --overwrite
+  python add_properties.py --csv hosts.csv --remove --dry-run   # preview removal
+  python add_properties.py --csv hosts.csv --remove             # remove the config's properties
+
+With --remove, the properties named in the config file are deleted from each
+host and every other property, tag and description is sent back unchanged.
 """
 from __future__ import annotations
 
@@ -170,7 +175,8 @@ def format_properties(label: str, props: Dict[str, Any], before: Props = None) -
 
 
 def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
-                 overwrite: bool, dry_run: bool) -> Result:
+                 overwrite: bool, dry_run: bool, remove: bool = False,
+                 force: bool = False) -> Result:
     """Handle one host. Returns (status, message, before, after).
 
     status is one of: updated, would_update, unchanged, not_found, error.
@@ -194,9 +200,18 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
 
     added: List[str] = []
     changed: List[str] = []
+    removed: List[str] = []
     skipped: List[str] = []
     for name, value in wanted.items():
-        if name not in existing:
+        if remove:
+            if name not in existing:
+                continue  # already absent
+            if str(existing[name]) == value or force:
+                removed.append("%s=%r" % (name, existing[name]))
+                del merged[name]
+            else:
+                skipped.append("%s (existing %r, config %r)" % (name, existing[name], value))
+        elif name not in existing:
             merged[name] = value
             added.append(name)
         elif str(existing[name]) == value:
@@ -208,10 +223,13 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
             skipped.append("%s (existing %r, wanted %r)" % (name, existing[name], value))
 
     notes = []
-    if skipped:
+    if skipped and remove:
+        notes.append("kept (value differs from config), use --force to remove anyway: "
+                     + "; ".join(skipped))
+    elif skipped:
         notes.append("kept existing value, use --overwrite to replace: " + "; ".join(skipped))
 
-    if not added and not changed:
+    if not added and not changed and not removed:
         return "unchanged", "; ".join(["nothing to change"] + notes), existing, existing
 
     if len(merged) > MAX_PROPERTIES_PER_DIMENSION:
@@ -224,6 +242,8 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
         summary.append("add " + ", ".join("%s=%r" % (n, wanted[n]) for n in added))
     if changed:
         summary.append("change " + "; ".join(changed))
+    if removed:
+        summary.append("remove " + ", ".join(removed))
     summary.extend(notes)
     message = " | ".join(summary)
 
@@ -248,6 +268,9 @@ def process_host(session: requests.Session, cfg: Dict[str, Any], host: str,
         missing = [n for n, v in merged.items() if str(stored.get(n)) != str(v)]
         if missing:
             message += " | WARNING: not visible after write yet: " + ", ".join(missing)
+        still_there = [n for n in existing if n not in merged and n in stored]
+        if still_there:
+            message += " | WARNING: still present after removal: " + ", ".join(still_there)
         return "updated", message, existing, stored
     return "updated", message + " | could not re-read to verify", existing, merged
 
@@ -267,6 +290,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true",
                         help="replace existing properties that have a different value "
                              "(default: keep the existing value and warn)")
+    parser.add_argument("--remove", action="store_true",
+                        help="remove the properties named in the config from each host "
+                             "instead of adding them; all other properties are kept. "
+                             "A property is only removed if its value matches the config "
+                             "(see --force)")
+    parser.add_argument("--force", action="store_true",
+                        help="with --remove, remove the named properties whatever their value")
     parser.add_argument("--quiet", action="store_true",
                         help="don't list each host's properties before and after, "
                              "only the one-line result")
@@ -275,6 +305,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+
+    if args.force and not args.remove:
+        print("error: --force only applies together with --remove", file=sys.stderr)
+        return 2
+    if args.remove and args.overwrite:
+        print("error: --overwrite cannot be combined with --remove", file=sys.stderr)
+        return 2
 
     try:
         cfg = load_config(args.config)
@@ -291,8 +328,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("error: no hostnames found in %s" % args.csv, file=sys.stderr)
         return 2
 
-    print("%s%s: %d host(s), dimension key %r, properties %s" % (
-        "[DRY RUN] " if args.dry_run else "", cfg["api_url"], len(hosts),
+    print("%s%s: %s, %d host(s), dimension key %r, properties %s" % (
+        "[DRY RUN] " if args.dry_run else "", cfg["api_url"],
+        "REMOVE" if args.remove else "ADD", len(hosts),
         cfg["dimension_key"], json.dumps(cfg["properties"])))
 
     session = requests.Session()
@@ -303,7 +341,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         for host in hosts:
             try:
                 status, message, before, after = process_host(
-                    session, cfg, host, args.overwrite, args.dry_run)
+                    session, cfg, host, args.overwrite, args.dry_run,
+                    args.remove, args.force)
             except requests.RequestException as exc:
                 status, message, before, after = "error", str(exc), None, None
             counts[status] = counts.get(status, 0) + 1

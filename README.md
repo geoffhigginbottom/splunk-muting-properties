@@ -152,6 +152,24 @@ To also replace properties that already exist with a different value:
 python3 add_properties.py --csv hosts.csv --overwrite
 ```
 
+### Removing the properties
+
+To undo the tagging, run the script with `--remove`. It deletes only the
+properties named in `config.json` from each host in the CSV. All other custom
+properties, tags and the description are sent back unchanged, so they stay
+active.
+
+```bash
+python3 add_properties.py --csv hosts.csv --remove --dry-run   # preview
+python3 add_properties.py --csv hosts.csv --remove             # apply
+```
+
+By default a property is only removed if its current value matches the value in
+the config (so you don't delete a `mute_group` that someone set to something
+else). Add `--force` to remove the named properties whatever their value.
+Hosts that don't have the property are reported as `UNCHANGED`.
+`--remove` can't be combined with `--overwrite`.
+
 ### Options
 
 | Option | Description |
@@ -160,6 +178,8 @@ python3 add_properties.py --csv hosts.csv --overwrite
 | `--config FILE` | JSON config file. Default `config.json`. |
 | `--dry-run` | Show what would change without modifying anything. Still sends a read-only `GET` for each host. |
 | `--overwrite` | Replace existing properties that have a different value. |
+| `--remove` | Remove the properties named in the config instead of adding them. Everything else is kept. |
+| `--force` | With `--remove`, remove the named properties even if their value differs from the config. |
 | `--quiet` | Hide the per-host BEFORE/AFTER property lists and print only the one-line result. |
 
 ### Exit codes
