@@ -1,0 +1,8 @@
+{
+  "realm": "eu0",
+  "dimension_key": "host.name",
+  "token_env": "SFX_TOKEN",
+  "properties": {
+    "mute_group": "demo-muting-rule"
+  }
+}
